@@ -76,11 +76,15 @@ conda activate foundationpose_ros
 
 ```bash
 # Build extensions
-cd FoundationPoseROS2 && export PATH=/usr/local/<YOUR_cuda-12.X_VERSION>/bin${PATH:+:${PATH}}~ && bash build_all_conda.sh
+cd FoundationPoseROS2 && export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}~ && bash build_all_conda.sh
 ```
 There might be error indicating `GLIBCXX_3.4.30' not found when running the script. Update gcc to fix this.
 ```
 conda install -c conda-forge gcc
+```
+After successful compilation, remove conda gcc
+```
+conda remove gcc
 ```
 
 > [!IMPORTANT]
@@ -98,7 +102,7 @@ In a separate terminal
 
 ```bash
 # Run foundationpose_ros_multi
-conda activate foundationpose_ros && source /opt/ros/<ROS_DISTRO>/setup.bash && export PATH=/usr/local/<YOUR_cuda-12.X_VERSION>/bin${PATH:+:${PATH}}~ && python ./FoundationPoseROS2/foundationpose_ros_multi.py
+conda activate foundationpose_ros && source /opt/ros/<ROS_DISTRO>/setup.bash && export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}~ && python ./FoundationPoseROS2/foundationpose_ros_multi.py
 ```
 > [!NOTE]
 > Check the camera topics and edit accordingly in the Python file.
@@ -133,7 +137,7 @@ In a separate terminal, activate your conda environment, export the correct CUDA
 
 ```bash
 # Activate the conda environment and run foundationpose_ros_multi
-conda activate foundationpose_ros && source /opt/ros/<ROS_DISTRO>/setup.bash && export PATH=/usr/local/<YOUR_cuda-12.X_VERSION>/bin${PATH:+:${PATH}}~ && python ./FoundationPoseROS2/foundationpose_ros_multi.py
+conda activate foundationpose_ros && source /opt/ros/<ROS_DISTRO>/setup.bash && export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}~ && python ./FoundationPoseROS2/foundationpose_ros_multi.py
 ```
 
 <p align="center">
