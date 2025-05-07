@@ -78,6 +78,11 @@ conda activate foundationpose_ros
 # Build extensions
 cd FoundationPoseROS2 && export PATH=/usr/local/<YOUR_cuda-12.X_VERSION>/bin${PATH:+:${PATH}}~ && bash build_all_conda.sh
 ```
+There might be error indicating `GLIBCXX_3.4.30' not found when running the script. Update gcc to fix this.
+```
+conda install -c conda-forge gcc
+```
+
 > [!IMPORTANT]
 > In the `setup.py` file located at `/FoundationPose/bundlesdf/mycuda/`, the C++ flags should be updated from **C++14** to **C++17** for compatibility with newer Nvidia GPUs. It is located at lines 18 and 19 in the file's `nvcc_flags` and c_flags section.
 
