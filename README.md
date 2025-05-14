@@ -66,13 +66,13 @@ git clone https://github.com/ammar-n-abbas/FoundationPoseROS2.git
 
 ```bash
 # Create conda environment
-conda create -n foundationpose_ros python=3.9 -y
+conda create -n foundationpose_ros python=3.10 -y
 
 # Activate conda environment
 conda activate foundationpose_ros
 ```
 > [!NOTE]
-> Conda environment must be created with the correct Python version according to the ROS2 distribution to ensure compatibility. For example, use Python 3.8 for ROS Foxy and Python 3.9 for ROS Humble.
+> Conda environment must be created with the correct Python version according to the ROS2 distribution to ensure compatibility. For example, use Python 3.8 for ROS Foxy and Python 3.10 for ROS Humble.
 
 ```bash
 # Build extensions
