@@ -178,3 +178,6 @@ FoundationPose/*
 
 demo_data/*
 data_bk/*
+
+# SAM models
+*.pt
