@@ -124,9 +124,9 @@ class PoseEstimationNode(Node):
         super().__init__('pose_estimation_node')
         
         # ROS subscriptions and publishers
-        self.image_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
-        self.depth_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
-        self.info_sub = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
+        self.image_sub = self.create_subscription(Image, '/image_rect', self.image_callback, 10)
+        self.depth_sub = self.create_subscription(Image, '/depth', self.depth_callback, 10)
+        self.info_sub = self.create_subscription(CameraInfo, '/camera_info_rect', self.camera_info_callback, 10)
         
         self.bridge = CvBridge()
         self.depth_image = None
@@ -165,179 +165,172 @@ class PoseEstimationNode(Node):
         self.process_images()
 
     def process_images(self):
-        if self.color_image is None or self.depth_image is None or self.cam_K is None:
-            return
+            if self.color_image is None or self.depth_image is None or self.cam_K is None:
+                return
 
-        H, W = self.color_image.shape[:2]
-        color = cv2.resize(self.color_image, (W, H), interpolation=cv2.INTER_NEAREST)
-        depth = cv2.resize(self.depth_image, (W, H), interpolation=cv2.INTER_NEAREST)
-        depth[(depth < 0.1) | (depth >= np.inf)] = 0
+            H, W = self.color_image.shape[:2]
+            color = cv2.resize(self.color_image, (W, H), interpolation=cv2.INTER_NEAREST)
+            depth = cv2.resize(self.depth_image, (W, H), interpolation=cv2.INTER_NEAREST)
+            depth[(depth < 0.1) | (depth >= np.inf)] = 0
 
-        if self.i == 0:
-            masks_accepted = False
-
-            while not masks_accepted:
-                # Use SAM2 for segmentation
-                res = self.seg_model.predict(color)[0]
-                res.save("masks.png")
-                if not res:
-                    self.get_logger().warn("No masks detected by SAM2.")
-                    return
-
+            if self.i == 0:
+                masks_accepted = False
                 objects_to_track = []
+                temporary_pose_data = {}  # Store pose estimator and related data
 
-                # Iterate over the segmentation results to extract the masks and bounding boxes
-                for r in res:
-                    img = np.copy(r.orig_img)
-                    for ci, c in enumerate(r):
-                        mask = np.zeros((H, W), np.uint8)
-                        contour = c.masks.xy.pop().astype(np.int32).reshape(-1, 1, 2)
-                        _ = cv2.drawContours(mask, [contour], -1, (255, 255, 255), cv2.FILLED)
-
-                        # Store mask and bounding box
-                        objects_to_track.append({
-                            'mask': mask,
-                            'box': c.boxes.xyxy.tolist().pop(),
-                            'contour': contour
-                        })
-
-                if not objects_to_track:
-                    self.get_logger().warn("No objects found in the image.")
-                    return
-
-                self.tracked_objects = []  # Reset tracked objects for redo
-                temporary_pose_estimations = {}
-                skipped_indices = []  # Track skipped objects' indices
-
-                def click_event(event, x, y, flags, params):
-                    if event == cv2.EVENT_LBUTTONDOWN:
-                        closest_dist = float('inf')
-                        selected_obj = None
-
-                        for obj in objects_to_track:
-                            if obj['mask'][y, x] == 255:  # Check if click is inside the mask
-                                dist = cv2.pointPolygonTest(obj['contour'], (x, y), True)
-
-                                if dist < closest_dist:
-                                    closest_dist = dist
-                                    selected_obj = obj
-
-                        if selected_obj is not None:
-                            sequential_id = len(self.tracked_objects) + len(skipped_indices)
-                            self.get_logger().info(f"Object {sequential_id} selected.")
-                            self.tracked_objects.append(selected_obj['mask'])
-
-                            # Temporarily store the mesh and bounds to avoid permanent removal
-                            temp_mesh = self.meshes.pop(0)  # Remove the first mesh in line
-                            temp_to_origin, _ = self.bounds.pop(0)  # Remove the first bound in line
-
-                            # Initialize FoundationPose for each detected object with corresponding mesh
-                            pose_est = FoundationPose(
-                                model_pts=temp_mesh.vertices,
-                                model_normals=temp_mesh.vertex_normals,
-                                mesh=temp_mesh,
-                                scorer=self.scorer,
-                                refiner=self.refiner,
-                                glctx=self.glctx
-                            )
-
-                            temporary_pose_estimations[sequential_id] = {
-                                'pose_est': pose_est,
-                                'mask': selected_obj['mask'],
-                                'to_origin': temp_to_origin
-                            }
-
-                            # Refresh the dialog box with the updated object name
-                            refresh_dialog_box()
-
-                def refresh_dialog_box():
-                    # Display contours for all detected objects
-                    combined_mask_image = np.copy(color)
-                    for idx, obj in enumerate(objects_to_track):
-                        cv2.drawContours(combined_mask_image, [obj['contour']], -1, (0, 255, 0), 2)  # Green contours
-
-                    # Get the next mesh name for user guidance, accounting for skips
-                    next_mesh_idx = len(self.tracked_objects) + len(skipped_indices)
-                    if next_mesh_idx < len(self.mesh_files):
-                        next_mesh_name = os.path.basename(self.mesh_files[next_mesh_idx].split("/")[-1].split(".")[0])
-                    else:
-                        next_mesh_name = "None"
-
-                    # Create the dialog box overlay
-                    overlay = combined_mask_image.copy()
-                    dialog_text = (
-                        f"Next object to select: {next_mesh_name}\n"
-                        "Instructions:\n"
-                        "- Click on the object to select.\n"
-                        "- Press 's' to skip the current object.\n"
-                        "- Press 'c', 'Enter', or 'Space' to confirm selection.\n"
-                        "- Press 'r' to redo mask selection.\n"
-                        "- Press 'q' to quit.\n"
-                    )
-                    y0, dy = 30, 20
-                    for i, line in enumerate(dialog_text.split('\n')):
-                        y = y0 + i * dy
-                        cv2.putText(overlay, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-
-                    cv2.imshow('Click on objects to track', overlay)
-                    cv2.setMouseCallback('Click on objects to track', click_event)
-
-                refresh_dialog_box()
-
-                while True:
-                    key = cv2.waitKey(0)  # Wait for a key event
-                    if key == ord('r'):
-                        self.get_logger().info("Redoing mask selection.")
-                        break  # Break the inner loop to redo mask selection
-                    elif key == ord('s'):
-                        self.get_logger().info("Skipping current object.")
-                        skipped_indices.append(len(self.tracked_objects) + len(skipped_indices))  # Track skipped mesh index
-
-                        # Remove the first mesh and bounds in line
-                        self.meshes.pop(0)
-                        self.bounds.pop(0)
-
-                        refresh_dialog_box()
-                    elif key in [ord('q'), 27]:  # 'q' or Esc to quit
-                        self.get_logger().info("Quitting mask selection.")
+                while not masks_accepted:
+                    # Use SAM2 for segmentation
+                    res = self.seg_model.predict(color)[0]
+                    res.save("masks.png")
+                    if not res:
+                        self.get_logger().warn("No masks detected by SAM2.")
                         return
-                    elif key in [ord('c'), 13, 32]:  # 'c', Enter, or Space to confirm
-                        if self.tracked_objects:
-                            # Confirm the selection and update the actual pose_estimations
-                            self.pose_estimations = temporary_pose_estimations
 
-                            # Remove the corresponding meshes and bounds from the original lists only after confirmation
-                            selected_indices = sorted(temporary_pose_estimations.keys(), reverse=True)
-                            self.meshes = [self.meshes[idx] for idx in selected_indices]
-                            self.bounds = [self.bounds[idx] for idx in selected_indices]
+                    objects_to_track = []
+                    for r in res:
+                        for c in r:
+                            mask = np.zeros((H, W), np.uint8)
+                            contour = c.masks.xy.pop().astype(np.int32).reshape(-1, 1, 2)
+                            cv2.drawContours(mask, [contour], -1, (255, 255, 255), cv2.FILLED)
+                            objects_to_track.append({
+                                'mask': mask,
+                                'box': c.boxes.xyxy.tolist().pop(),
+                                'contour': contour
+                            })
 
-                            masks_accepted = True  # Exit the outer loop if masks are accepted
+                    if not objects_to_track:
+                        self.get_logger().warn("No objects found in the image.")
+                        return
+
+                    self.tracked_objects = []  # Reset tracked objects for redo
+                    skipped_indices_count = 0
+
+                    def click_event(event, x, y, flags, params):
+                        nonlocal skipped_indices_count
+                        if event == cv2.EVENT_LBUTTONDOWN:
+                            closest_dist = float('inf')
+                            selected_obj_index = None
+
+                            for idx, obj in enumerate(objects_to_track):
+                                if obj['mask'][y, x] == 255:
+                                    dist = cv2.pointPolygonTest(obj['contour'], (x, y), True)
+                                    if dist < closest_dist:
+                                        closest_dist = dist
+                                        selected_obj_index = idx
+
+                            if selected_obj_index is not None:
+                                if selected_obj_index not in [data['original_index'] for data in temporary_pose_data.values() if 'original_index' in data]:
+                                    self.get_logger().info(f"Object {len(temporary_pose_data) + 1} selected.")
+                                    selected_obj = objects_to_track[selected_obj_index]
+
+                                    # Get the current mesh and bounds
+                                    if self.meshes:
+                                        current_mesh = self.meshes.pop(0)
+                                        current_bounds = self.bounds.pop(0)
+                                        temp_to_origin, _ = current_bounds
+
+                                        # Initialize FoundationPose
+                                        pose_est = FoundationPose(
+                                            model_pts=current_mesh.vertices,
+                                            model_normals=current_mesh.vertex_normals,
+                                            mesh=current_mesh,
+                                            scorer=self.scorer,
+                                            refiner=self.refiner,
+                                            glctx=self.glctx
+                                        )
+                                        temporary_pose_data[len(temporary_pose_data) + 1] = {
+                                            'pose_est': pose_est,
+                                            'mask': selected_obj['mask'],
+                                            'to_origin': temp_to_origin,
+                                            'original_index': selected_obj_index + skipped_indices_count # Keep track of original index
+                                        }
+                                        refresh_dialog_box()
+                                    else:
+                                        self.get_logger().warn("No more meshes available for selection.")
+                                else:
+                                    self.get_logger().info("Object already selected.")
+
+                    def refresh_dialog_box():
+                        combined_mask_image = np.copy(color)
+                        for obj in objects_to_track:
+                            cv2.drawContours(combined_mask_image, [obj['contour']], -1, (0, 255, 0), 2)
+
+                        next_mesh_name = "None"
+                        if self.meshes:
+                            next_mesh_name = os.path.basename(self.meshes[0].metadata['file_name']) if 'file_name' in self.meshes[0].metadata else os.path.basename(self.mesh_files[len(temporary_pose_data) + skipped_indices_count].split("/")[-1].split(".")[0])
+
+                        overlay = combined_mask_image.copy()
+                        dialog_text = (
+                            f"Next object to select: {next_mesh_name}\n"
+                            "Instructions:\n"
+                            "- Click on the object to select.\n"
+                            "- Press 's' to skip the current object.\n"
+                            "- Press 'c', 'Enter', or 'Space' to confirm selection.\n"
+                            "- Press 'r' to redo mask selection.\n"
+                            "- Press 'q' to quit.\n"
+                        )
+                        y0, dy = 30, 20
+                        for i, line in enumerate(dialog_text.split('\n')):
+                            y = y0 + i * dy
+                            cv2.putText(overlay, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+                        cv2.imshow('Click on objects to track', overlay)
+                        cv2.setMouseCallback('Click on objects to track', click_event)
+
+                    refresh_dialog_box()
+
+                    while True:
+                        key = cv2.waitKey(0)
+                        if key == ord('r'):
+                            self.get_logger().info("Redoing mask selection.")
+                            # Restore skipped meshes and bounds
+                            self.meshes = [data['pose_est'].mesh for data in temporary_pose_data.values()] + self.meshes
+                            self.bounds = [data['pose_est'].mesh.bounding_box_oriented for data in temporary_pose_data.values()] + self.bounds
+                            temporary_pose_data = {}
+                            skipped_indices_count = 0
                             break
-                        else:
-                            self.get_logger().warn("No objects selected. Redo mask selection.")
+                        elif key == ord('s'):
+                            self.get_logger().info("Skipping current object.")
+                            if self.meshes:
+                                skipped_mesh = self.meshes.pop(0)
+                                skipped_bounds = self.bounds.pop(0)
+                                skipped_indices_count += 1
+                                refresh_dialog_box()
+                            else:
+                                self.get_logger().warn("No more meshes to skip.")
+                        elif key in [ord('q'), 27]:
+                            self.get_logger().info("Quitting mask selection.")
+                            return
+                        elif key in [ord('c'), 13, 32]:
+                            if temporary_pose_data:
+                                self.pose_estimations = temporary_pose_data
+                                masks_accepted = True
+                                break
+                            else:
+                                self.get_logger().warn("No objects selected. Redo mask selection.")
 
-        visualization_image = np.copy(color)
+            visualization_image = np.copy(color)
 
-        for idx, data in self.pose_estimations.items():
-            pose_est = data['pose_est']
-            obj_mask = data['mask']
-            to_origin = data['to_origin']
-            if pose_est.is_register:
-                pose = pose_est.track_one(rgb=color, depth=depth, K=self.cam_K, iteration=args.track_refine_iter)
-                center_pose = pose @ np.linalg.inv(to_origin)
+            for idx, data in self.pose_estimations.items():
+                pose_est = data['pose_est']
+                obj_mask = data['mask']
+                to_origin = data['to_origin']
+                if pose_est.is_register:
+                    pose = pose_est.track_one(rgb=color, depth=depth, K=self.cam_K, iteration=args.track_refine_iter)
+                    center_pose = pose @ np.linalg.inv(to_origin)
 
-                self.publish_pose_stamped(center_pose, f"object_{idx}_frame", f"/Current_OBJ_position_{idx+1}")
+                    self.publish_pose_stamped(center_pose, f"object_{idx}_frame", f"/Current_OBJ_position_{idx}") # Use the key 'idx'
 
-                visualization_image = self.visualize_pose(visualization_image, center_pose, idx)
-            else:
-                pose = pose_est.register(K=self.cam_K, rgb=color, depth=depth, ob_mask=obj_mask, iteration=args.est_refine_iter)
-            self.i += 1
+                    visualization_image = self.visualize_pose(visualization_image, center_pose, list(self.pose_estimations.keys()).index(idx)) # Get the index in the current estimation list
+                else:
+                    pose = pose_est.register(K=self.cam_K, rgb=color, depth=depth, ob_mask=obj_mask, iteration=args.est_refine_iter)
+                self.i += 1
 
-        cv2.imshow('Pose Estimation & Tracking', visualization_image[..., ::-1])
-        cv2.waitKey(1)
+            cv2.imshow('Pose Estimation & Tracking', visualization_image[..., ::-1])
+            cv2.waitKey(1)
 
-    def visualize_pose(self, image, center_pose, idx):
-        bbox = self.bboxes[idx % len(self.bboxes)]
+    def visualize_pose(self, image, center_pose, mesh_index):
+        bbox = self.bboxes[mesh_index % len(self.bboxes)] # Use the correct index for bboxes
         vis = draw_posed_3d_box(self.cam_K, img=image, ob_in_cam=center_pose, bbox=bbox)
         vis = draw_xyz_axis(vis, ob_in_cam=center_pose, scale=0.1, K=self.cam_K, thickness=3, transparency=0, is_input_rgb=True)
         return vis
